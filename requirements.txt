@@ -1,3 +1,9 @@
+# jos-reinvented-wheel-ui
+# Copyright (C) 2025 Jothest2pid
+#
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
+# See the LICENSE file or <https://www.gnu.org/licenses/> for details.
+
 Flask==3.0.0
 requests==2.31.0
 python-dotenv==1.0.0
