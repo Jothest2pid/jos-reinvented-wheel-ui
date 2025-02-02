@@ -13,8 +13,8 @@ A Flask-based web application that provides a chat interface for interacting wit
 
 1. Clone the repository:
 ```bash
-git clone [your-repository-url]
-cd [repository-name]
+git clone https://github.com/Jothest2pid/jos-reinvented-wheel-ui
+cd jos-reinvented-wheel-ui
 ```
 
 2. Create and activate a virtual environment:
@@ -82,7 +82,3 @@ The application uses SQLite for storing chat history. The database schema includ
 - This application is designed to run locally
 - Ensure Ollama is properly configured and secured
 - Do not expose the application to the internet without proper security measures
-
-## License
-
-[Your License Here]
