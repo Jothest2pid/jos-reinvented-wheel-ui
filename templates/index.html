@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Chat Interface</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <div class="model-selector">
+        <label for="model-select">Model:</label>
+        <select id="model-select" onchange="handleModelChange(this.value)">
+            <option value="">Loading models...</option>
+        </select>
+    </div>
+    <div class="app-container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h3>Saved Chats</h3>
+                <div class="sidebar-actions">
+                    <button onclick="newChat()" class="primary">New Chat</button>
+                    <button onclick="saveCurrentChat()" class="secondary">Save Chat</button>
+                </div>
+            </div>
+            <div class="chat-list" id="chat-list">
+                <!-- Saved chats will be listed here -->
+            </div>
+        </div>
+        
+        <div class="main-content">
+            <div class="prompt-config">
+                <h3>Additional System Prompt</h3>
+                <textarea id="additional-prompt" placeholder="Enter additional system prompt here..."></textarea>
+            </div>
+            
+            <div class="chat-container">
+                <div class="chat-messages" id="chat-messages"></div>
+                <div class="input-container">
+                    <textarea id="user-input" placeholder="Type your message... (Shift+Enter for new line)" rows="1"></textarea>
+                    <button onclick="sendMessage()">Send</button>
+                    <button onclick="clearChat()" class="danger">Clear Chat</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Save Chat Modal -->
+    <div class="modal" id="save-chat-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Save Chat</h3>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="chat-name-input" placeholder="Enter chat name..." style="width: 100%; padding: 8px;">
+            </div>
+            <div class="modal-footer">
+                <button onclick="closeModal('save-chat-modal')" class="secondary">Cancel</button>
+                <button onclick="saveChatWithName()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rename Chat Modal -->
+    <div class="modal" id="rename-chat-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Rename Chat</h3>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="rename-chat-input" placeholder="Enter new name..." style="width: 100%; padding: 8px;">
+            </div>
+            <div class="modal-footer">
+                <button onclick="closeModal('rename-chat-modal')" class="secondary">Cancel</button>
+                <button onclick="renameChatConfirm()">Rename</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let messages = [];
+        let currentChatId = null;
+        
+        let currentModel = null;
+
+        // Load saved chats and models on page load
+        window.onload = function() {
+            loadSavedChats();
+            loadModels();
+        };
+
+        async function loadModels() {
+            try {
+                const response = await fetch('/models');
+                const data = await response.json();
+                const select = document.getElementById('model-select');
+                
+                if (response.ok && data.models) {
+                    select.innerHTML = data.models.map(model => 
+                        `<option value="${model.name}">
+                            ${model.name}
+                        </option>`
+                    ).join('');
+                    // Set first model as current if none selected
+                    if (!currentModel && data.models.length > 0) {
+                        currentModel = data.models[0].name;
+                        select.value = currentModel;
+                    }
+                } else {
+                    select.innerHTML = '<option value="">No models available - Download one using: ollama pull <model-name></option>';
+                    currentModel = null;
+                }
+            } catch (error) {
+                console.error('Error loading models:', error);
+                const select = document.getElementById('model-select');
+                select.innerHTML = '<option value="">Failed to connect to Ollama</option>';
+                currentModel = null;
+            }
+        }
+
+        function handleModelChange(model) {
+            currentModel = model;
+        }
+        
+        function addMessage(role, content) {
+            const messagesDiv = document.getElementById('chat-messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}-message`;
+            
+            // Add timestamp
+            const timestamp = new Date().toLocaleTimeString();
+            const header = document.createElement('div');
+            header.className = 'message-header';
+            header.textContent = `${role.charAt(0).toUpperCase() + role.slice(1)} • ${timestamp}`;
+            messageDiv.appendChild(header);
+            
+            // Add content
+            const contentDiv = document.createElement('div');
+            contentDiv.innerHTML = content; // Use innerHTML to render thought boxes
+            messageDiv.appendChild(contentDiv);
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            
+            // Add click handlers for thought boxes (collapsed by default)
+            messageDiv.querySelectorAll('.thought-box').forEach(box => {
+                const header = box.querySelector('.thought-header');
+                const content = box.querySelector('.thought-content');
+                
+                // Add click handler to toggle
+                header.onclick = function(e) {
+                    e.stopPropagation();
+                    const thoughtId = content.id;
+                    toggleThought(thoughtId);
+                };
+            });
+            
+            return messageDiv;
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('user-input');
+            const message = input.value.trim();
+            if (!message) return;
+
+            // Add user message to chat
+            addMessage('user', message);
+            input.value = '';
+            // Reset textarea height
+            autoResizeTextarea(input);
+
+            // Update messages array
+            messages.push({
+                role: "user",
+                content: message
+            });
+
+            // Get additional system prompt
+            const additionalPrompt = document.getElementById('additional-prompt').value.trim();
+            
+            try {
+            const response = await fetch('/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    messages: messages,
+                    additional_prompt: additionalPrompt,
+                    model: currentModel
+                })
+                });
+
+                // Create message div for AI response
+                let aiMessageDiv = null;
+                let currentResponse = '';
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                while (true) {
+                    const {value, done} = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(5));
+                                
+                                if (data.type === 'generating') {
+                                    if (!aiMessageDiv) {
+                                        aiMessageDiv = addMessage('ai', 'Generating message for 0 seconds...');
+                                        // Start timer
+                                        const startTime = Date.now();
+                                        const timer = setInterval(() => {
+                                            const seconds = Math.floor((Date.now() - startTime) / 1000);
+                                            const contentDiv = aiMessageDiv.querySelector('div:last-child');
+                                            if (contentDiv) {
+                                                contentDiv.textContent = `Generating message for ${seconds} seconds...`;
+                                            } else {
+                                                clearInterval(timer);
+                                            }
+                                        }, 1000);
+                                        // Store timer ID to clear it when message is complete
+                                        aiMessageDiv.dataset.timerId = timer;
+                                    }
+                                } else if (data.type === 'content') {
+                                    // Clear timer if it exists
+                                    if (aiMessageDiv && aiMessageDiv.dataset.timerId) {
+                                        clearInterval(parseInt(aiMessageDiv.dataset.timerId));
+                                        delete aiMessageDiv.dataset.timerId;
+                                    }
+                                    if (aiMessageDiv) {
+                                        const contentDiv = aiMessageDiv.querySelector('div:last-child');
+                                        contentDiv.innerHTML = data.content;
+                                    } else {
+                                        aiMessageDiv = addMessage('ai', data.content);
+                                    }
+                                    currentResponse = data.content;
+                                }
+                            } catch (e) {
+                                console.error('Error parsing SSE data:', e);
+                            }
+                        }
+                    }
+                }
+
+                // Add final message to messages array
+                if (currentResponse) {
+                    messages.push({
+                        role: "assistant",
+                        content: currentResponse
+                    });
+                }
+
+            } catch (error) {
+                console.error('Error:', error);
+                addMessage('ai', 'Sorry, there was an error processing your request.');
+            }
+        }
+
+        // Chat management functions
+        async function loadSavedChats() {
+            try {
+                const response = await fetch('/saved_chats');
+                const chats = await response.json();
+                const chatList = document.getElementById('chat-list');
+                chatList.innerHTML = '';
+                
+                chats.forEach(chat => {
+                    const chatDiv = document.createElement('div');
+                    chatDiv.className = 'chat-item' + (chat.id === currentChatId ? ' active' : '');
+                    chatDiv.innerHTML = `
+                        <span>${chat.name}</span>
+                        <div class="chat-item-actions">
+                            <button onclick="renameChat(${chat.id})" class="secondary">Rename</button>
+                            <button onclick="deleteChat(${chat.id})" class="danger">Delete</button>
+                        </div>
+                    `;
+                    chatDiv.onclick = (e) => {
+                        if (!e.target.matches('button')) {
+                            loadChat(chat.id);
+                        }
+                    };
+                    chatList.appendChild(chatDiv);
+                });
+            } catch (error) {
+                console.error('Error loading chats:', error);
+            }
+        }
+
+        function saveCurrentChat() {
+            document.getElementById('save-chat-modal').classList.add('show');
+        }
+
+        async function saveChatWithName() {
+            const name = document.getElementById('chat-name-input').value.trim();
+            if (!name) return;
+            
+            try {
+                const response = await fetch('/save_chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ name })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    currentChatId = data.id;
+                    closeModal('save-chat-modal');
+                    loadSavedChats();
+                }
+            } catch (error) {
+                console.error('Error saving chat:', error);
+            }
+        }
+
+        async function loadChat(chatId) {
+            try {
+                const response = await fetch(`/saved_chats/${chatId}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.messages) {
+                        currentChatId = chatId;
+                        const messagesDiv = document.getElementById('chat-messages');
+                        messagesDiv.innerHTML = '';
+                        messages = [];
+
+                        // Display each message
+                        data.messages.forEach(msg => {
+                            if (msg.role !== 'system') {
+                                addMessage(msg.role, msg.content);
+                                messages.push(msg);
+                            }
+                        });
+
+                        // Scroll to bottom
+                        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    }
+                    loadSavedChats(); // Refresh chat list to update active state
+                }
+            } catch (error) {
+                console.error('Error loading chat:', error);
+            }
+        }
+
+        async function deleteChat(chatId) {
+            if (!confirm('Are you sure you want to delete this chat?')) return;
+            
+            try {
+                const response = await fetch(`/saved_chats/${chatId}`, {
+                    method: 'DELETE'
+                });
+                if (response.ok) {
+                    if (currentChatId === chatId) {
+                        currentChatId = null;
+                        clearChat();
+                    }
+                    loadSavedChats();
+                }
+            } catch (error) {
+                console.error('Error deleting chat:', error);
+            }
+        }
+
+        let chatToRename = null;
+
+        function renameChat(chatId) {
+            chatToRename = chatId;
+            document.getElementById('rename-chat-modal').classList.add('show');
+        }
+
+        async function renameChatConfirm() {
+            const newName = document.getElementById('rename-chat-input').value.trim();
+            if (!newName || !chatToRename) return;
+            
+            try {
+                const response = await fetch(`/saved_chats/${chatToRename}/rename`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ name: newName })
+                });
+                
+                if (response.ok) {
+                    closeModal('rename-chat-modal');
+                    loadSavedChats();
+                }
+            } catch (error) {
+                console.error('Error renaming chat:', error);
+            }
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('show');
+            if (modalId === 'save-chat-modal') {
+                document.getElementById('chat-name-input').value = '';
+            } else if (modalId === 'rename-chat-modal') {
+                document.getElementById('rename-chat-input').value = '';
+                chatToRename = null;
+            }
+        }
+
+        async function clearChat(skipConfirm = false) {
+            if (!skipConfirm && messages.length > 0) {
+                if (!confirm('You have an unsaved chat. Are you sure you want to clear it?')) {
+                    return false;
+                }
+            }
+            
+            try {
+                const response = await fetch('/clear_chat', {
+                    method: 'POST'
+                });
+                if (response.ok) {
+                    messages = [];
+                    currentChatId = null;
+                    const messagesDiv = document.getElementById('chat-messages');
+                    messagesDiv.innerHTML = '';
+                    document.getElementById('additional-prompt').value = '';
+                    loadSavedChats();
+                }
+                return true;
+            } catch (error) {
+                console.error('Error clearing chat:', error);
+                return false;
+            }
+        }
+
+        async function newChat() {
+            if (await clearChat()) {
+                // Focus on input after clearing
+                document.getElementById('user-input').focus();
+            }
+        }
+
+        // Auto-resize textarea
+        function autoResizeTextarea(textarea) {
+            textarea.style.height = 'auto';
+            textarea.style.height = textarea.scrollHeight + 'px';
+        }
+
+        // Initialize textarea
+        const userInput = document.getElementById('user-input');
+        userInput.addEventListener('input', () => autoResizeTextarea(userInput));
+
+        // Handle Enter key in input
+        userInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                if (e.shiftKey) {
+                    // Don't prevent default - allow new line
+                    setTimeout(() => autoResizeTextarea(this), 0);
+                    return;
+                }
+                // Prevent default to avoid new line and send message
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Toggle thought content visibility
+        function toggleThought(thoughtId) {
+            const content = document.getElementById(thoughtId);
+            const thoughtBox = content.closest('.thought-box');
+            const wasCollapsed = content.classList.contains('collapsed');
+            
+            content.classList.toggle('collapsed');
+            thoughtBox.classList.toggle('expanded', !wasCollapsed);
+        }
+    </script>
+</body>
+</html>
